@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: SEE LICENSE IN LICENSE
+pragma solidity ^0.8.20;
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "./interfaces/IERC20.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+
+contract Nishaq is ERC20{
+    constructor(
+        string memory name,
+        string memory symbol
+    ) ERC20(name, symbol){
+        _mint(msg.sender, 1000000000e18);
+    }
+}
+
+contract SwapSter{
+    using Strings for string;
+    mapping (string => IERC20) internal tokenContracts;
+    mapping (string => AggregatorV3Interface) internal tokenPrices;
+
+    Nishaq public immutable nishaqToken;
+
+    uint256 internal constant nishaqTokenPrice = 1e14 wei;
+
+    string[] public tokenNames = [
+        'LINK'
+    ];
+
+    constructor(
+        string memory nishaqName,
+        string memory nishaqSymbol,
+        address[] memory token_addrs,
+        address[] memory tokensPriceFeedAddresses
+    ){
+        require(token_addrs.length == tokenNames.length && tokensPriceFeedAddresses.length == tokenNames.length, "invalid address count detected");
+        // now first creating and adding my Nishaq Token
+        nishaqToken = new Nishaq(nishaqName, nishaqSymbol);
+        // now mapping tokenName to the token
+        for (uint token_index; token_index < token_addrs.length; token_index++) {
+            //temp token instances
+            IERC20 tmpTokenInst = IERC20(address(token_addrs[token_index]));
+            tokenContracts[tokenNames[token_index]] = tmpTokenInst;
+        }
+        tokenContracts['NISH'] = nishaqToken;
+
+        for (uint token_price_index; token_price_index < tokenNames.length; token_price_index++) {
+            AggregatorV3Interface tempAggr = AggregatorV3Interface(tokensPriceFeedAddresses[token_price_index]);
+            tokenPrices[tokenNames[token_price_index]] = tempAggr;
+        }
+    }
+
+    // I will write in total of 3 functions first ->
+    
+    // 1. swapping ETH with NISHAQ
+    // 2. swapping NISHAQ with ETH
+
+    function getTokenFromAnother(
+        string memory token1_name,
+        string memory token2_name,
+        uint256  token1_amount,
+        uint256 token2_amount
+    )  public payable {
+        require(token1_amount > 0 && token2_amount > 0, "Both the values must be greater than 0");
+        // checking if token 1 and token 2 exists
+        require(token1_name.equal(token2_name), "Both tokens cannot be same");
+
+        bool one_exists;
+        bool two_exists;
+        if (token1_name.equal('NISH')){
+            one_exists = true;
+            two_exists = false;
+        }else if (token2_name.equal('NISH')) {
+            one_exists = false;
+            two_exists = true;
+        }
+        else{
+            one_exists = false;
+            two_exists = false;
+        }
+
+        for (uint256 token_counter; token_counter < tokenNames.length; token_counter++) {
+            if(!one_exists){
+                if (token1_name.equal(tokenNames[token_counter])){
+                    one_exists = true;
+                }
+            }
+            if (!two_exists){
+                // checking for the second token
+                if (token2_name.equal(tokenNames[token_counter])){
+                    two_exists = true;
+                }
+            }
+            if (two_exists && one_exists){
+                break;
+            }
+        }
+
+        // now checking if the both the conditions are true
+        require(one_exists && two_exists, "Invalid coin Name entered");
+        uint256 token_one_amount;
+        uint256 token_two_price;
+
+        require(msg.value > 0, "amount must be greater than 0");
+        if(token1_name.equal('NISH')){
+            token_one_amount = nishaqTokenPrice;
+        }
+        else if (token1_name.equal('ETH')){
+            token_one_amount = msg.value;
+        }
+        else{
+            int256 token_one_temp_amount;
+            (,token_one_temp_amount,,,) = tokenPrices[token1_name].latestRoundData();
+            token_one_amount = uint256(token_one_temp_amount);
+        }
+
+        if(token2_name.equal('NISH')){
+            token_two_price = nishaqTokenPrice;
+        }
+        else if (token2_name.equal('ETH')){
+            token_two_price = msg.value;
+        }
+        else{
+            int256 token_two_temp_price;
+            (,token_two_temp_price,,,) = tokenPrices[token2_name].latestRoundData();
+            token_two_price = uint256(token_two_temp_price);
+        }
+
+        // now sending tokens first according to the ETH
+        if (token1_name.equal("ETH")){
+            uint256 exactCoinValue = (token_one_amount / token_two_price) * 1e18;
+            tokenContracts[token2_name].transfer(msg.sender, exactCoinValue);
+            // now trasnfering the Coin from Here to there
+        }
+        else if (token2_name.equal("ETH")){
+            uint256 exactTotalCoins = token_two_price / (10 ** 18);
+            uint256 valueInEThs = exactTotalCoins * token_one_amount;
+            // now sending the those tokens to ourselves
+            require(address(this).balance >= valueInEThs, "DEX is running low on balance");
+            payable(msg.sender).transfer(valueInEThs);
+            require(tokenContracts[token1_name].transferFrom(msg.sender, address(this), token_two_price));
+        }
+        else{
+            uint256 token1exactCoins = msg.value / (10 ** 18);
+            uint256 ethValueofToken1Coins = token1exactCoins * token_one_amount;
+            tokenContracts[token1_name].transferFrom(msg.sender, address(this), msg.value);
+
+            // now converting the ETH to the token2 coins and sending it
+            uint256 exactTokenTwoCoins = (ethValueofToken1Coins / token_two_price) * 1e18;
+            tokenContracts[token2_name].transfer(msg.sender, exactTokenTwoCoins);
+        }
+    }
+}
